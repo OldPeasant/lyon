@@ -1,0 +1,5 @@
+Lyon is a file explorer for the shell implemented in Python using curses for the TUI.
+
+Concept and implementation by Peter Max Guertler / coder@sonensei.ch
+
+
