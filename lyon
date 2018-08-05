@@ -1,0 +1,409 @@
+#!/usr/bin/python
+
+#
+# Copyright (C) 2018 Peter Max Guertler
+# This program comes with ABSOLUTELY NO WARRANTY
+# This is free software, and you are welcome to use and redistribute it
+    
+import curses
+import os
+import sys
+import string
+import traceback
+import subprocess
+#import logging
+
+
+CMD_VIEW = 'less'
+CMD_EDIT = 'vim'
+CMD_SHELL = os.path.expandvars('$SHELL')
+
+INITIAL_COLUMN_WIDTH = 20
+BIG_STEP = 10 # jump multiple files up or down with shift pressed
+
+class FileEntry:
+	def __init__(self, name, isdir):
+		self.name = name
+		self.isdir = isdir
+	
+def cmp_file_entries(s1, s2):
+    return cmp(string.lower(s1.name), string.lower(s2.name))
+
+def read_file_entries(folder):
+	result = []
+	try:
+		list = os.listdir(folder)
+	except:
+		list = []
+	for f in list:
+		try:
+			full_path = os.path.join(folder, f)
+			isdir = os.path.isdir(full_path)
+		except:
+			isdir = None
+		result.append(FileEntry(f, isdir))
+	result.sort(cmp_file_entries)
+	return result
+
+class Column:
+	def __init__(self, full_path):
+		self.full_path = full_path
+		self.file_entries = read_file_entries(self.full_path)
+		self.selection_index = -1
+		self.child_column = None
+		self.folder_selected = False
+
+	def selected_name(self):
+		if self.selection_index < 0:
+			return None
+		else:
+			return self.file_entries[self.selection_index].name
+
+	def select_child(self, name):
+		index = 0
+		for f in self.file_entries:
+			if f.name == name:
+				self.select(index)
+				return self.child_column
+			index += 1
+		return None
+		
+	def select(self, index):
+		if index < 0 or index >= len(self.file_entries):
+			self.selection_index = -1
+			self.child_column = None
+			self.folder_selected = None
+		else:
+			self.selection_index = index
+			child_path = os.path.join(self.full_path, self.file_entries[index].name)
+			if os.path.isdir(child_path):
+				self.child_column = Column(child_path)
+				self.folder_selected = True
+			else:
+				self.child_column = None
+				self.folder_selected = False
+
+	def last(self):
+		c = self
+		while not(c.child_column is None):
+			c = c.child_column
+		return c
+
+	def select_next(self):
+		if len(self.file_entries) == 0:
+			self.select(-1)
+			return
+		if self.selection_index < 0:
+			self.select(0)
+		else:
+			if self.selection_index < len(self.file_entries) - 1:
+				self.select(self.selection_index + 1)
+
+	def select_prev(self):
+		if len(self.file_entries) == 0:
+			self.select(-1)
+			return
+		if self.selection_index > 0:
+			self.select(self.selection_index - 1)
+		else:
+			self.select(0)
+
+	def select_next_n(self, n):
+		if len(self.file_entries) == 0:
+			self.select(-1)
+			return
+		if self.selection_index < 0:
+			self.select(0)
+		else:
+			if self.selection_index < len(self.file_entries) - 1:
+				self.select(min(self.selection_index + n, len(self.file_entries) - 1))
+
+	def select_prev_n(self, n):
+		if len(self.file_entries) == 0:
+			self.select(-1)
+			return
+		if self.selection_index > 0:
+			self.select(max(self.selection_index - n, 0))
+		else:
+			self.select(0)
+class LyonModel:
+	def __init__(self, stdscr, path_elements):
+		self.stdscr = stdscr
+		self.root_column = Column('/')
+		curr_col = self.root_column
+		self.focus_column = self.root_column
+		for p in path_elements:
+			self.focus_column = curr_col
+			curr_col = curr_col.select_child(p)
+			if curr_col is None:
+				raise Exception("Could not find file %s" % p)
+		self.key = ''
+		self.column_width = INITIAL_COLUMN_WIDTH
+		self.show_help = False
+		self.write_screen()
+
+	def parent(self, col):
+		p = self.root_column;
+		c = p.child_column
+		while c and c != col:
+			p = c
+			c = c.child_column
+		if p == col:
+			return None
+		else:
+			return p
+	
+	def run_outside_curses(self, cmd_arr):
+		curses.savetty()
+		curses.endwin()
+		p = subprocess.Popen(cmd_arr)
+		p.wait()
+		self.stdscr.refresh()
+		curses.resetty()
+		curses.curs_set(0)
+		
+	def view_selected_file(self):
+		col = self.root_column.last()
+		if col.selection_index < 0:
+			return
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		self.run_outside_curses([CMD_VIEW, path_to_file])
+		
+	def edit_selected_file(self):
+		col = self.root_column.last()
+		if col.selection_index < 0:
+			return
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		self.run_outside_curses([CMD_EDIT, path_to_file])
+
+	def open_shell(self):
+		col = self.root_column.last()
+		if col.selection_index < 0:
+			col = self.parent(col)
+		while not(col.file_entries[col.selection_index].isdir):
+			col = self.parent(col)
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		os.chdir(path_to_file)
+		self.run_outside_curses([CMD_SHELL])
+		
+	def handle_key(self, key):
+		#logging.info("Key is %d" % key)
+		self.show_help = False
+		self.key = key
+		if key == 104 or key == curses.KEY_LEFT: # h
+			if self.focus_column != self.root_column:
+				parent = self.parent(self.focus_column)
+				if parent:
+					self.focus_column.select(-1)
+					self.focus_column = parent
+		elif key == 106 or key == curses.KEY_DOWN: # j
+			self.focus_column.select_next()
+		elif key == 74 or key == 336: # shift down
+			self.focus_column.select_next_n(BIG_STEP)
+		elif key == 107 or key == curses.KEY_UP: # k
+			self.focus_column.select_prev()
+		elif key == 75 or key == 337: # shift up
+			self.focus_column.select_prev_n(BIG_STEP)
+		elif key == 108 or key == curses.KEY_RIGHT: # l
+			if (self.focus_column.child_column and len(self.focus_column.child_column.file_entries) > 0):
+				self.focus_column = self.focus_column.child_column
+				if len(self.focus_column.file_entries) > 0:
+					self.focus_column.select(0)
+		elif key == 43: # +
+			self.column_width += 1
+		elif key == 45: # -
+			self.column_width -= 1
+			if self.column_width < 5:
+				self.column_width = 5
+		elif key == 63: # ?
+			self.show_help = True
+		elif key == 118: # v
+			self.view_selected_file()
+		elif key == 101: # e
+			self.edit_selected_file()
+		elif key == 115: # s
+			self.open_shell()
+		elif key == curses.KEY_RESIZE:
+			pass
+		self.write_screen()
+		return key != 120 and key != 113
+
+	def get_all_columns(self):
+		all_cols = []
+		c = self.root_column
+		while not(c is None):
+			all_cols.append(c)
+			c = c.child_column
+		return all_cols
+
+	def find_first_column(self, col_count):
+		all_cols = self.get_all_columns()
+		if len(all_cols) < 1:
+			return all_cols[0]
+		last_col = all_cols[-1]
+		if last_col.selection_index >= 0 and not(last_col.folder_selected):
+			count_selectable = len(all_cols) + 1
+		else:
+			count_selectable = len(all_cols)
+			
+		index = count_selectable - col_count
+		non_zero_index = max(index, 0)
+		return all_cols[non_zero_index]
+		
+	def get_col_offset(self, col, max_y):
+		if (col.selection_index < 0):
+			return 0
+		delta_bottom = 5
+		offset = col.selection_index + delta_bottom - max_y
+		o = min(offset, len(col.file_entries) - max_y + 1)
+		if o > 0:
+			return o
+		else:
+			return 0
+		
+	def write_screen(self):
+		self.stdscr.clear()
+		if self.show_help:
+			self.write_help_screen()
+			return
+		max_y, max_x = self.stdscr.getmaxyx()
+		max_x -= 1
+
+		max_col_width = ((max_x) / 2) - 1
+		actual_col_width = min(max_col_width, self.column_width)
+		disp_col_count = max_x / actual_col_width
+		
+		last_col = self.root_column.last()
+		if last_col.selection_index < 0:
+			p = last_col.full_path
+		else:
+			p = os.path.join(last_col.full_path, last_col.selected_name())
+		if len(p) > max_x:
+			p = p[-max_x:]
+		self.stdscr.addstr(max_y - 1, 0, p)
+		
+		x = 0
+		col = self.find_first_column(disp_col_count)
+		while (not(col is None)):
+			x_sep = x + actual_col_width - 1
+			if x_sep < max_x - 1:
+				for y_sep in range(0, max_y - 1):
+					self.stdscr.addstr(y_sep, x_sep, '|')
+			y = -self.get_col_offset(col, max_y)
+			file_index = 0
+			for f in col.file_entries:
+				s = f.name[:actual_col_width-2].ljust(actual_col_width-2, " ")
+				if (y >= 0 and y < max_y - 1):
+					try:
+						if col.selection_index == file_index:
+							self.stdscr.addstr(y, x, s, curses.A_REVERSE)
+						else:
+							self.stdscr.addstr(y, x, s)
+					except:
+						print(traceback.format_exc())
+					x_dirmarker = x + actual_col_width - 2
+					if x_dirmarker < max_x - 1:
+						if f.isdir is None:
+							dirmarker = '?'
+						elif f.isdir:
+							dirmarker = '>'
+						else:
+							dirmarker = ' '
+						if col.selection_index == file_index:
+							self.stdscr.addstr(y, x_dirmarker, dirmarker, curses.A_REVERSE)
+						else:
+							self.stdscr.addstr(y, x_dirmarker, dirmarker)
+				y += 1
+				file_index += 1
+			x += actual_col_width
+			col = col.child_column
+
+	def write_help_screen(self):
+		help_lines = [
+			"                                                ",
+			"                                                ",
+			"  ********************************************  ",
+			"  *         lyon shell file browser          *  ",
+			"  *                                          *  ",
+			"  *     Copyright by Peter Max Guertler      *  ",
+			"  *                                          *  ",
+			"  * Keyboard Shortcuts:                      *  ",
+			"  *                                          *  ",
+			"  * ?               : Show this help page    *  ",
+			"  *                                          *  ",
+			"  * h / left arrow  : Move to parent folder  *  ",
+			"  * l / right arrow : Move to child folder   *  ",
+			"  * j / down arrow  : Move to next file      *  ",
+			"  * k / up arrow    : Move to previous file  *  ",
+			"  *                                          *  ",
+			"  * v               : View file with 'less'  *  ",
+			"  * e               : Edit file with 'vi'    *  ",
+			"  * s               : Open shell at location *  ",
+			"  *                                          *  ",
+			"  * +               : Increase column width  *  ",
+			"  * -               : Decrease column width  *  ",
+			"  *                                          *  ",
+			"  * q / x           : Exit lyon              *  ",
+			"  *                                          *  ",
+			"  ********************************************  ",
+			"                                                ",
+			"                                                ",
+		]
+		s = self.stdscr
+		max_y, max_x = s.getmaxyx()
+		y = 2
+		for l in help_lines:
+			if y < max_y:
+				trimmed = l[:(max_x - 3)]
+				string.zfill("A", 33)
+				s.addstr( y, 2, trimmed)
+			y += 1
+								
+def event_loop(stdscr, path_elements):
+	model = LyonModel(stdscr, path_elements)
+	while (True):
+		
+		try:
+			c = stdscr.getch()
+		except KeyboardInterrupt:
+			return
+		if not(model.handle_key(c)):
+			return;
+
+def start_curses():
+	stdscr = curses.initscr()
+	curses.noecho()
+	curses.cbreak()
+	stdscr.keypad(1)
+	return stdscr
+	
+def stop_curses(stdscr):
+	curses.nocbreak();stdscr.keypad(0);curses.echo()
+	curses.endwin()
+	
+def run(path_elements):
+	stdscr = start_curses()
+	err = None
+	try:
+		event_loop(stdscr, path_elements)
+	except Exception, ex:
+		err = traceback.format_exc()
+		#logging.error(err)
+	stop_curses(stdscr)
+	if err:
+		print(err)
+
+#logging.basicConfig(filename='lyon.log',level=logging.DEBUG)
+
+args = sys.argv[1:]
+if len(args) == 0:
+	initial_folder = '.'
+else:
+	initial_folder = args[0]
+initial_folder = os.path.abspath(initial_folder)
+
+path = os.path.normpath(initial_folder)
+path_elements_with_empty_elements = path.split(os.sep)
+run([x for x in path_elements_with_empty_elements if x])
+
+
