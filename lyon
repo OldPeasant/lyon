@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-#
+# lyon shell file browser v1.1
 # Copyright (C) 2018 Peter Max Guertler
 # This program comes with ABSOLUTELY NO WARRANTY
 # This is free software, and you are welcome to use and redistribute it
@@ -15,43 +15,122 @@ import subprocess
 
 
 CMD_VIEW = 'less'
-CMD_EDIT = 'vim'
+CMD_EDIT = 'vi'
 CMD_SHELL = os.path.expandvars('$SHELL')
 
 INITIAL_COLUMN_WIDTH = 20
-BIG_STEP = 10 # jump multiple files up or down with shift pressed
+
+HELP_TEXT = [
+	"                                                ",
+	"                                                ",
+	"  ********************************************  ",
+	"  *       lyon shell file browser  1.1       *  ",
+	"  *                                          *  ",
+	"  *     Copyright by Peter Max Guertler      *  ",
+	"  *                                          *  ",
+	"  * Keyboard Shortcuts:                      *  ",
+	"  *                                          *  ",
+	"  * ?               : Show this help page    *  ",
+	"  *                                          *  ",
+	"  * h / left arrow  : Move to parent folder  *  ",
+	"  * l / right arrow : Move to child folder   *  ",
+	"  * j / down arrow  : Move to next file      *  ",
+	"  * k / up arrow    : Move to previous file  *  ",
+	"  * shift up/down   : Move page up/down      *  ",
+	"  *                                          *  ",
+	"  * v               : View file with 'less'  *  ",
+	"  * e               : Edit file with 'vi'    *  ",
+	"  * s               : Open shell at location *  ",
+	"  * r               : Reload                 *  ",
+	"  *                                          *  ",
+	"  * +               : Increase column width  *  ",
+	"  * -               : Decrease column width  *  ",
+	"  *                                          *  ",
+	"  * q / x           : Exit lyon              *  ",
+	"  *                                          *  ",
+	"  ********************************************  ",
+	"                                                ",
+	"                                                ",
+]
+
+
+class SelectorElement:
+	def __init__(self):
+		self.default_selection = None
+		self.children = {}
+
+	def get_child(self, name):
+		if name in self.children:
+			c = self.children[name]
+		else:
+			c = SelectorElement()
+			self.children[name] = c
+		return c
+
+
+class DefaultSelector:
+	def __init__(self):
+		self.root_selector_element = SelectorElement()
+
+	def set_current(self, path):
+		s = ""
+		selector_element = self.root_selector_element
+		for f in path:
+			selector_element.default_selection = f
+			selector_element = selector_element.get_child(f)
+			s += f + "#"
+
+	def get_default_selection(self, path):
+		s = ""
+		selector_element = self.root_selector_element
+		for f in path:
+			selector_element = selector_element.get_child(f)
+			s += f + "#"
+		return selector_element.default_selection
+
 
 class FileEntry:
 	def __init__(self, name, isdir):
 		self.name = name
 		self.isdir = isdir
-	
-def cmp_file_entries(s1, s2):
-    return cmp(string.lower(s1.name), string.lower(s2.name))
 
-def read_file_entries(folder):
-	result = []
-	try:
-		list = os.listdir(folder)
-	except:
-		list = []
-	for f in list:
+	@staticmethod	
+	def _cmp_file_entries(s1, s2):
+	    return cmp(string.lower(s1.name), string.lower(s2.name))
+
+	@staticmethod
+	def read_file_entries(folder):
+		result = []
 		try:
-			full_path = os.path.join(folder, f)
-			isdir = os.path.isdir(full_path)
+			list = os.listdir(folder)
 		except:
-			isdir = None
-		result.append(FileEntry(f, isdir))
-	result.sort(cmp_file_entries)
-	return result
+			list = []
+		for f in list:
+			try:
+				full_path = os.path.join(folder, f)
+				isdir = os.path.isdir(full_path)
+			except:
+				isdir = None
+			result.append(FileEntry(f, isdir))
+		result.sort(FileEntry._cmp_file_entries)
+		return result
+
 
 class Column:
 	def __init__(self, full_path):
 		self.full_path = full_path
-		self.file_entries = read_file_entries(self.full_path)
+		self.file_entries = FileEntry.read_file_entries(self.full_path)
 		self.selection_index = -1
 		self.child_column = None
 		self.folder_selected = False
+
+	def get_all_columns(self):
+		all_cols = []
+		c = self
+		while not(c is None):
+			all_cols.append(c)
+			c = c.child_column
+		return all_cols
 
 	def selected_name(self):
 		if self.selection_index < 0:
@@ -126,9 +205,18 @@ class Column:
 			self.select(max(self.selection_index - n, 0))
 		else:
 			self.select(0)
+
+
 class LyonModel:
 	def __init__(self, stdscr, path_elements):
-		self.stdscr = stdscr
+		self.view = LyonView(stdscr)
+		self.default_selector = DefaultSelector()
+		self.root_column = None
+		self.focus_column = None
+		self.init_path(path_elements)
+		self.update_default_selection()
+
+	def init_path(self, path_elements):
 		self.root_column = Column('/')
 		curr_col = self.root_column
 		self.focus_column = self.root_column
@@ -136,11 +224,30 @@ class LyonModel:
 			self.focus_column = curr_col
 			curr_col = curr_col.select_child(p)
 			if curr_col is None:
-				raise Exception("Could not find file %s" % p)
-		self.key = ''
-		self.column_width = INITIAL_COLUMN_WIDTH
-		self.show_help = False
-		self.write_screen()
+				break
+		self.view.show_help = False
+		self.view.write_screen(self.root_column)
+
+
+	def update_default_selection(self):
+		col = self.root_column.last()
+		if col.selected_name():
+			path_to_file = os.path.join(col.full_path, col.selected_name())
+		else:
+			path_to_file = col.full_path
+		path_elements_with_empty = path_to_file.split(os.sep)
+		path_no_empty = [x for x in path_elements_with_empty if x]
+		self.default_selector.set_current(path_no_empty)
+
+	def reload(self):
+		col = self.root_column.last()
+		if col.selected_name():
+			path_to_file = os.path.join(col.full_path, col.selected_name())
+		else:
+			path_to_file = col.full_path
+		path_elements_with_empty = path_to_file.split(os.sep)
+		path_no_empty = [x for x in path_elements_with_empty if x]
+		self.init_path(path_no_empty)
 
 	def parent(self, col):
 		p = self.root_column;
@@ -152,92 +259,134 @@ class LyonModel:
 			return None
 		else:
 			return p
-	
-	def run_outside_curses(self, cmd_arr):
-		curses.savetty()
-		curses.endwin()
-		p = subprocess.Popen(cmd_arr)
-		p.wait()
-		self.stdscr.refresh()
-		curses.resetty()
-		curses.curs_set(0)
-		
-	def view_selected_file(self):
-		col = self.root_column.last()
-		if col.selection_index < 0:
-			return
-		path_to_file = os.path.join(col.full_path, col.selected_name())
-		self.run_outside_curses([CMD_VIEW, path_to_file])
-		
-	def edit_selected_file(self):
-		col = self.root_column.last()
-		if col.selection_index < 0:
-			return
-		path_to_file = os.path.join(col.full_path, col.selected_name())
-		self.run_outside_curses([CMD_EDIT, path_to_file])
 
-	def open_shell(self):
-		col = self.root_column.last()
-		if col.selection_index < 0:
-			col = self.parent(col)
-		while not(col.file_entries[col.selection_index].isdir):
-			col = self.parent(col)
-		path_to_file = os.path.join(col.full_path, col.selected_name())
-		os.chdir(path_to_file)
-		self.run_outside_curses([CMD_SHELL])
-		
-	def handle_key(self, key):
-		#logging.info("Key is %d" % key)
-		self.show_help = False
-		self.key = key
-		if key == 104 or key == curses.KEY_LEFT: # h
-			if self.focus_column != self.root_column:
-				parent = self.parent(self.focus_column)
-				if parent:
-					self.focus_column.select(-1)
-					self.focus_column = parent
-		elif key == 106 or key == curses.KEY_DOWN: # j
-			self.focus_column.select_next()
-		elif key == 74 or key == 336: # shift down
-			self.focus_column.select_next_n(BIG_STEP)
-		elif key == 107 or key == curses.KEY_UP: # k
-			self.focus_column.select_prev()
-		elif key == 75 or key == 337: # shift up
-			self.focus_column.select_prev_n(BIG_STEP)
-		elif key == 108 or key == curses.KEY_RIGHT: # l
-			if (self.focus_column.child_column and len(self.focus_column.child_column.file_entries) > 0):
-				self.focus_column = self.focus_column.child_column
-				if len(self.focus_column.file_entries) > 0:
+	def get_default_selection(self):
+		col = self.focus_column
+		path = col.full_path
+		path_elements_with_empty = path.split(os.sep)
+		path_no_empty = [x for x in path_elements_with_empty if x]
+		return self.default_selector.get_default_selection(path_no_empty)
+
+	def move_right(self):
+		if (self.focus_column.child_column and len(self.focus_column.child_column.file_entries) > 0):
+			self.focus_column = self.focus_column.child_column
+			if len(self.focus_column.file_entries) > 0:
+				sel = self.get_default_selection()
+				if sel:
+					self.focus_column.select_child(sel)
+					if self.focus_column.selection_index < 0:
+						self.focus_column.select(0)
+				else:
 					self.focus_column.select(0)
-		elif key == 43: # +
-			self.column_width += 1
-		elif key == 45: # -
-			self.column_width -= 1
-			if self.column_width < 5:
-				self.column_width = 5
-		elif key == 63: # ?
-			self.show_help = True
-		elif key == 118: # v
-			self.view_selected_file()
-		elif key == 101: # e
-			self.edit_selected_file()
-		elif key == 115: # s
-			self.open_shell()
-		elif key == curses.KEY_RESIZE:
-			pass
-		self.write_screen()
-		return key != 120 and key != 113
 
-	def get_all_columns(self):
-		all_cols = []
-		c = self.root_column
-		while not(c is None):
-			all_cols.append(c)
-			c = c.child_column
-		return all_cols
+	def move_left(self):
+		if self.focus_column != self.root_column:
+			parent = self.parent(self.focus_column)
+			if parent:
+				self.focus_column.select(-1)
+				self.focus_column = parent
 
-	def find_first_column(self, col_count):
-		all_cols = self.get_all_columns()
+
+class LyonView:
+	def __init__(self, stdscr):
+		self.stdscr = stdscr
+		self.column_width = INITIAL_COLUMN_WIDTH
+		self.show_help = False
+
+	def write_screen(self, root_column):
+		self.stdscr.clear()
+		if self.show_help:
+			self._write_help_screen()
+		else:
+			self._write_file_browser(root_column)
+
+	def _write_file_browser(self, root_column):
+		max_y, max_x = self.stdscr.getmaxyx()
+		max_x -= 1
+
+		max_col_width = ((max_x) / 2) - 1
+		actual_col_width = min(max_col_width, self.column_width)
+		disp_col_count = max_x / actual_col_width
+	
+		self._write_current_selection(root_column, max_x, max_y)	
+		
+		x = 0
+		col = self._find_first_column_on_screen(disp_col_count, root_column)
+		while (not(col is None)):
+			self._write_column(max_x, max_y, x, actual_col_width, col)
+			x += actual_col_width
+			col = col.child_column
+
+	def _write_column(self, max_x, max_y, x, actual_col_width, col):
+		x_sep = x + actual_col_width - 1
+		if x_sep < max_x - 1:
+			for y_sep in range(0, max_y - 1):
+				self.stdscr.addstr(y_sep, x_sep, '|')
+
+		y = -self._get_col_offset(col, max_y)
+		file_index = 0
+		for f in col.file_entries:
+			if (y >= 0 and y < max_y - 1):
+				self._write_file_entry(max_x, x, y, actual_col_width, col, file_index, f)
+			y += 1
+			file_index += 1
+
+	def _write_file_entry(self, max_x, x, y, actual_col_width, col, file_index, f):
+		try:
+			s = f.name[:actual_col_width-2].ljust(actual_col_width-2, " ")
+			if col.selection_index == file_index:
+				self.stdscr.addstr(y, x, s, curses.A_REVERSE)
+			else:
+				self.stdscr.addstr(y, x, s)
+		except:
+			print(traceback.format_exc())
+		x_dirmarker = x + actual_col_width - 2
+		if x_dirmarker < max_x - 1:
+			if f.isdir is None:
+				dirmarker = '?'
+			elif f.isdir:
+				dirmarker = '>'
+			else:
+				dirmarker = ' '
+			if col.selection_index == file_index:
+				self.stdscr.addstr(y, x_dirmarker, dirmarker, curses.A_REVERSE)
+			else:
+				self.stdscr.addstr(y, x_dirmarker, dirmarker)
+
+	def _write_current_selection(self, root_column, max_x, max_y):
+		last_col = root_column.last()
+		if last_col.selection_index < 0:
+			p = last_col.full_path
+		else:
+			p = os.path.join(last_col.full_path, last_col.selected_name())
+		if len(p) > max_x:
+			p = p[-max_x:]
+		self.stdscr.addstr(max_y - 1, 0, p)
+
+	def _write_help_screen(self):
+		s = self.stdscr
+		max_y, max_x = s.getmaxyx()
+		y = 2
+		for l in HELP_TEXT:
+			if y < max_y:
+				trimmed = l[:(max_x - 3)]
+				string.zfill("A", 33)
+				s.addstr( y, 2, trimmed)
+			y += 1
+
+	def _get_col_offset(self, col, max_y):
+		if (col.selection_index < 0):
+			return 0
+		delta_bottom = 5
+		offset = col.selection_index + delta_bottom - max_y
+		o = min(offset, len(col.file_entries) - max_y + 1)
+		if o > 0:
+			return o
+		else:
+			return 0
+
+	def _find_first_column_on_screen(self, col_count, root_column):
+		all_cols = root_column.get_all_columns()
 		if len(all_cols) < 1:
 			return all_cols[0]
 		last_col = all_cols[-1]
@@ -249,149 +398,164 @@ class LyonModel:
 		index = count_selectable - col_count
 		non_zero_index = max(index, 0)
 		return all_cols[non_zero_index]
-		
-	def get_col_offset(self, col, max_y):
-		if (col.selection_index < 0):
-			return 0
-		delta_bottom = 5
-		offset = col.selection_index + delta_bottom - max_y
-		o = min(offset, len(col.file_entries) - max_y + 1)
-		if o > 0:
-			return o
-		else:
-			return 0
-		
-	def write_screen(self):
-		self.stdscr.clear()
-		if self.show_help:
-			self.write_help_screen()
+
+
+class LyonController:
+	def __init__(self, stdscr, path_elements):
+		self.stdscr = stdscr
+		self.model = LyonModel(stdscr, path_elements)
+		self.key_handlers = self._build_key_handlers()
+
+	def _build_key_handlers(self):
+		k = {}
+
+		k[104]               = self.move_left          # h
+		k[curses.KEY_LEFT]   = self.move_left          # cursor left
+		k[108]               = self.move_right         # l
+		k[curses.KEY_RIGHT]  = self.move_right         # cursor right
+		k[106]               = self.move_down          # j
+		k[curses.KEY_DOWN]   = self.move_down          # cursor down
+		k[107]               = self.move_up            # k
+		k[curses.KEY_UP]     = self.move_up            # cursor up
+
+		k[74]                = self.page_down          # J
+		k[336]               = self.page_down          # shift + cursor down
+		k[75]                = self.page_up            # K
+		k[337]               = self.page_up            # shift + cursor up
+
+		k[43]                = self.inc_column_width   # +
+		k[45]                = self.dec_column_width   # -
+		k[63]                = self.show_help          # ?
+
+		k[118]               = self.view_selected_file # v
+		k[101]               = self.edit_selected_file # e
+		k[115]               = self.open_shell         # s
+
+		k[114]               = self.reload             # r
+		k[curses.KEY_RESIZE] = self.resize             # resize event
+
+		return k
+
+	def _run_outside_curses(self, cmd_arr):
+		curses.savetty()
+		curses.endwin()
+		p = subprocess.Popen(cmd_arr)
+		p.wait()
+		self.stdscr.refresh()
+		curses.resetty()
+		curses.curs_set(0)
+
+
+	def view_selected_file(self):
+		col = self.model.root_column.last()
+		if col.selection_index < 0:
 			return
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		self._run_outside_curses([CMD_VIEW, path_to_file])
+
+	def edit_selected_file(self):
+		col = self.model.root_column.last()
+		if col.selection_index < 0:
+			return
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		self._run_outside_curses([CMD_EDIT, path_to_file])
+
+	def open_shell(self):
+		col = self.model.root_column.last()
+		if col.selection_index < 0:
+			col = self.model.parent(col)
+		while not(col.file_entries[col.selection_index].isdir):
+			col = self.model.parent(col)
+		path_to_file = os.path.join(col.full_path, col.selected_name())
+		os.chdir(path_to_file)
+		self._run_outside_curses([CMD_SHELL])
+		self.model.reload()
+
+	def move_left(self):
+		self.model.move_left()
+
+	def move_right(self):
+		self.model.move_right()
+
+	def move_down(self):
+		self.model.focus_column.select_next()
+		self.model.update_default_selection()
+
+	def move_up(self):
+		self.model.focus_column.select_prev()
+		self.model.update_default_selection()
+
+	def page_down(self):
 		max_y, max_x = self.stdscr.getmaxyx()
-		max_x -= 1
+		self.model.focus_column.select_next_n(max_y - 2)
+		self.model.update_default_selection()
 
-		max_col_width = ((max_x) / 2) - 1
-		actual_col_width = min(max_col_width, self.column_width)
-		disp_col_count = max_x / actual_col_width
-		
-		last_col = self.root_column.last()
-		if last_col.selection_index < 0:
-			p = last_col.full_path
-		else:
-			p = os.path.join(last_col.full_path, last_col.selected_name())
-		if len(p) > max_x:
-			p = p[-max_x:]
-		self.stdscr.addstr(max_y - 1, 0, p)
-		
-		x = 0
-		col = self.find_first_column(disp_col_count)
-		while (not(col is None)):
-			x_sep = x + actual_col_width - 1
-			if x_sep < max_x - 1:
-				for y_sep in range(0, max_y - 1):
-					self.stdscr.addstr(y_sep, x_sep, '|')
-			y = -self.get_col_offset(col, max_y)
-			file_index = 0
-			for f in col.file_entries:
-				s = f.name[:actual_col_width-2].ljust(actual_col_width-2, " ")
-				if (y >= 0 and y < max_y - 1):
-					try:
-						if col.selection_index == file_index:
-							self.stdscr.addstr(y, x, s, curses.A_REVERSE)
-						else:
-							self.stdscr.addstr(y, x, s)
-					except:
-						print(traceback.format_exc())
-					x_dirmarker = x + actual_col_width - 2
-					if x_dirmarker < max_x - 1:
-						if f.isdir is None:
-							dirmarker = '?'
-						elif f.isdir:
-							dirmarker = '>'
-						else:
-							dirmarker = ' '
-						if col.selection_index == file_index:
-							self.stdscr.addstr(y, x_dirmarker, dirmarker, curses.A_REVERSE)
-						else:
-							self.stdscr.addstr(y, x_dirmarker, dirmarker)
-				y += 1
-				file_index += 1
-			x += actual_col_width
-			col = col.child_column
+	def page_up(self):
+		max_y, max_x = self.stdscr.getmaxyx()
+		self.model.focus_column.select_prev_n(max_y - 2)
+		self.model.update_default_selection()
 
-	def write_help_screen(self):
-		help_lines = [
-			"                                                ",
-			"                                                ",
-			"  ********************************************  ",
-			"  *         lyon shell file browser          *  ",
-			"  *                                          *  ",
-			"  *     Copyright by Peter Max Guertler      *  ",
-			"  *                                          *  ",
-			"  * Keyboard Shortcuts:                      *  ",
-			"  *                                          *  ",
-			"  * ?               : Show this help page    *  ",
-			"  *                                          *  ",
-			"  * h / left arrow  : Move to parent folder  *  ",
-			"  * l / right arrow : Move to child folder   *  ",
-			"  * j / down arrow  : Move to next file      *  ",
-			"  * k / up arrow    : Move to previous file  *  ",
-			"  *                                          *  ",
-			"  * v               : View file with 'less'  *  ",
-			"  * e               : Edit file with 'vi'    *  ",
-			"  * s               : Open shell at location *  ",
-			"  *                                          *  ",
-			"  * +               : Increase column width  *  ",
-			"  * -               : Decrease column width  *  ",
-			"  *                                          *  ",
-			"  * q / x           : Exit lyon              *  ",
-			"  *                                          *  ",
-			"  ********************************************  ",
-			"                                                ",
-			"                                                ",
-		]
-		s = self.stdscr
-		max_y, max_x = s.getmaxyx()
-		y = 2
-		for l in help_lines:
-			if y < max_y:
-				trimmed = l[:(max_x - 3)]
-				string.zfill("A", 33)
-				s.addstr( y, 2, trimmed)
-			y += 1
-								
-def event_loop(stdscr, path_elements):
-	model = LyonModel(stdscr, path_elements)
-	while (True):
+	def dec_column_width(self):
+		self.model.view.column_width -= 1
+		if self.model.view.column_width < 5:
+			self.model.view.column_width = 5
+
+	def inc_column_width(self):
+		self.model.view.column_width += 1
+
+	def reload(self):
+		self.model.reload()
+
+	def show_help(self):
+		self.model.view.show_help = True
+
+	def resize(self):
+		# nothing to do
+		# screen is refreshed because there is a corresponding action
+		pass
+
+	def handle_key(self, key):
+		#logging.info("Key is %d" % key)
+		self.model.view.show_help = False
+		if key in self.key_handlers:
+			h = self.key_handlers[key]
+			h() # execute key action
+			self.model.view.write_screen(self.model.root_column)
+		return key != 120 and key != 113 # q or x to exit
+
+
+class LyonApp:
+	@staticmethod
+	def run(initial_folder):
+		path_elements_with_empty_elements = os.path.normpath(initial_folder).split(os.sep)
+		path_elements = [x for x in path_elements_with_empty_elements if x]
 		
+		stdscr = curses.initscr()
+		curses.noecho();curses.cbreak();stdscr.keypad(1)
+
+		controller = LyonController(stdscr, path_elements)
+
+		err = None
 		try:
-			c = stdscr.getch()
-		except KeyboardInterrupt:
-			return
-		if not(model.handle_key(c)):
-			return;
+			LyonApp.event_loop(stdscr, controller)
+		except Exception, ex:
+			err = traceback.format_exc()
+		curses.nocbreak();stdscr.keypad(0);curses.echo()
+		curses.endwin()
+		if err:
+			print(err)
 
-def start_curses():
-	stdscr = curses.initscr()
-	curses.noecho()
-	curses.cbreak()
-	stdscr.keypad(1)
-	return stdscr
-	
-def stop_curses(stdscr):
-	curses.nocbreak();stdscr.keypad(0);curses.echo()
-	curses.endwin()
-	
-def run(path_elements):
-	stdscr = start_curses()
-	err = None
-	try:
-		event_loop(stdscr, path_elements)
-	except Exception, ex:
-		err = traceback.format_exc()
-		#logging.error(err)
-	stop_curses(stdscr)
-	if err:
-		print(err)
+	@staticmethod
+	def event_loop(stdscr, controller):
+		while (True):
+			try:
+				c = stdscr.getch()
+			except KeyboardInterrupt:
+				return
+			if not(controller.handle_key(c)):
+				return;
+
+
 
 #logging.basicConfig(filename='lyon.log',level=logging.DEBUG)
 
@@ -400,10 +564,6 @@ if len(args) == 0:
 	initial_folder = '.'
 else:
 	initial_folder = args[0]
-initial_folder = os.path.abspath(initial_folder)
 
-path = os.path.normpath(initial_folder)
-path_elements_with_empty_elements = path.split(os.sep)
-run([x for x in path_elements_with_empty_elements if x])
-
+LyonApp.run(os.path.abspath(initial_folder))
 
