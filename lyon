@@ -1,10 +1,35 @@
 #!/usr/bin/python
 
-# lyon shell file browser v1.1
-# Copyright (C) 2018 Peter Max Guertler
-# This program comes with ABSOLUTELY NO WARRANTY
-# This is free software, and you are welcome to use and redistribute it
-    
+###############################################################################
+#                                                                             #
+#                          lyon shell file browser v1.2                       #
+#                                                                             #
+###############################################################################
+#                                                                             #
+#          Copyright (c) 2019 Peter Max Guertler, coder@sonensei.ch           #
+#                                                                             #
+###############################################################################
+#                                                                             #
+# Permission is hereby granted, free of charge, to any person obtaining a     #
+# copy of this software and associated documentation files (the "Software"),  #
+# to deal in the Software without restriction, including without limitation   #
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,    #
+# and/or sell copies of the Software, and to permit persons to whom the       #
+# Software is furnished to do so, subject to the following conditions:        #
+#                                                                             #
+# The above copyright notice and this permission notice shall be included     #
+# in all copies or substantial portions of the Software.                      #
+#                                                                             #
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR  #
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,    #
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE #
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER      #
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING     #
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER         #
+# DEALINGS IN THE SOFTWARE.                                                   #
+#                                                                             #
+###############################################################################
+
 import curses
 import os
 import sys
@@ -24,9 +49,10 @@ HELP_TEXT = [
 	"                                                ",
 	"                                                ",
 	"  ********************************************  ",
-	"  *       lyon shell file browser  1.1       *  ",
+	"  *       lyon shell file browser  1.2       *  ",
 	"  *                                          *  ",
 	"  *     Copyright by Peter Max Guertler      *  ",
+	"  *            coder@sonensei.ch             *  ",
 	"  *                                          *  ",
 	"  * Keyboard Shortcuts:                      *  ",
 	"  *                                          *  ",
@@ -53,6 +79,14 @@ HELP_TEXT = [
 	"                                                ",
 ]
 
+def safe_str(unsafe_str):
+    safe = ""
+    for c in unsafe_str:
+        if c in string.printable:
+            safe += c
+        else:
+            safe += '?'
+    return safe
 
 class SelectorElement:
 	def __init__(self):
@@ -333,7 +367,7 @@ class LyonView:
 
 	def _write_file_entry(self, max_x, x, y, actual_col_width, col, file_index, f):
 		try:
-			s = f.name[:actual_col_width-2].ljust(actual_col_width-2, " ")
+			s = safe_str(f.name)[:actual_col_width-2].ljust(actual_col_width-2, " ")
 			if col.selection_index == file_index:
 				self.stdscr.addstr(y, x, s, curses.A_REVERSE)
 			else:
@@ -359,9 +393,10 @@ class LyonView:
 			p = last_col.full_path
 		else:
 			p = os.path.join(last_col.full_path, last_col.selected_name())
-		if len(p) > max_x:
-			p = p[-max_x:]
-		self.stdscr.addstr(max_y - 1, 0, p)
+                safe_p = safe_str(p)
+		if len(safe_p) > max_x:
+			safe_p = safe_p[-max_x:]
+		self.stdscr.addstr(max_y - 1, 0, safe_p)
 
 	def _write_help_screen(self):
 		s = self.stdscr
